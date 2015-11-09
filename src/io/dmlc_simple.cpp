@@ -1,6 +1,8 @@
+// Copyright by Contributors
 #define _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_DEPRECATE
 #define NOMINMAX
+#include <string>
 #include "../utils/io.h"
 
 // implements a single no split version of DMLC
@@ -9,7 +11,7 @@
 namespace xgboost {
 namespace utils {
 /*!
- * \brief line split implementation from single FILE 
+ * \brief line split implementation from single FILE
  * simply returns lines of files, used for stdin
  */
 class SingleFileSplit : public dmlc::InputSplit {
@@ -32,9 +34,12 @@ class SingleFileSplit : public dmlc::InputSplit {
   }
   virtual size_t Read(void *ptr, size_t size) {
     return std::fread(ptr, 1, size, fp_);
-  }  
+  }
   virtual void Write(const void *ptr, size_t size) {
     utils::Error("cannot do write in inputsplit");
+  }
+  virtual void BeforeFirst(void) {
+    std::fseek(fp_, 0, SEEK_SET);
   }
   virtual bool NextRecord(Blob *out_rec) {
     if (chunk_begin_ == chunk_end_) {
@@ -44,13 +49,13 @@ class SingleFileSplit : public dmlc::InputSplit {
                                 chunk_end_);
     out_rec->dptr = chunk_begin_;
     out_rec->size = next - chunk_begin_;
-    chunk_begin_ = next;    
+    chunk_begin_ = next;
     return true;
   }
   virtual bool NextChunk(Blob *out_chunk) {
     if (chunk_begin_ == chunk_end_) {
       if (!LoadChunk()) return false;
-    }    
+    }
     out_chunk->dptr = chunk_begin_;
     out_chunk->size = chunk_end_ - chunk_begin_;
     chunk_begin_ = chunk_end_;
@@ -61,8 +66,8 @@ class SingleFileSplit : public dmlc::InputSplit {
     if (max_size <= overflow_.length()) {
       *size = 0; return true;
     }
-    if (overflow_.length() != 0) { 
-      std::memcpy(buf, BeginPtr(overflow_), overflow_.length());  
+    if (overflow_.length() != 0) {
+      std::memcpy(buf, BeginPtr(overflow_), overflow_.length());
     }
     size_t olen = overflow_.length();
     overflow_.resize(0);
@@ -85,13 +90,13 @@ class SingleFileSplit : public dmlc::InputSplit {
       return true;
     }
   }
-  
+
  protected:
   inline const char* FindLastRecordBegin(const char *begin,
                                          const char *end) {
     if (begin == end) return begin;
     for (const char *p = end - 1; p != begin; --p) {
-      if (*p == '\n' || *p == '\r') return p + 1; 
+      if (*p == '\n' || *p == '\r') return p + 1;
     }
     return begin;
   }
@@ -138,26 +143,9 @@ class SingleFileSplit : public dmlc::InputSplit {
 
 class StdFile : public dmlc::Stream {
  public:
-  explicit StdFile(const char *fname, const char *mode)
-      : use_stdio(false) {
-    using namespace std;
-#ifndef XGBOOST_STRICT_CXX98_
-    if (!strcmp(fname, "stdin")) {
-      use_stdio = true; fp = stdin;
-    }
-    if (!strcmp(fname, "stdout")) {
-      use_stdio = true; fp = stdout;
-    }
-#endif
-    if (!strncmp(fname, "file://", 7)) fname += 7;
-    if (!use_stdio) {
-      std::string flag = mode;
-      if (flag == "w") flag = "wb";
-      if (flag == "r") flag = "rb";
-      fp = utils::FopenCheck(fname, flag.c_str());
-      
-    }
-  }  
+  explicit StdFile(std::FILE *fp, bool use_stdio)
+      : fp(fp), use_stdio(use_stdio) {
+  }
   virtual ~StdFile(void) {
     this->Close();
   }
@@ -168,7 +156,7 @@ class StdFile : public dmlc::Stream {
     std::fwrite(ptr, size, 1, fp);
   }
   virtual void Seek(size_t pos) {
-    std::fseek(fp, static_cast<long>(pos), SEEK_SET);
+    std::fseek(fp, static_cast<long>(pos), SEEK_SET);  // NOLINT(*)
   }
   virtual size_t Tell(void) {
     return std::ftell(fp);
@@ -194,6 +182,7 @@ InputSplit* InputSplit::Create(const char *uri,
                                unsigned part,
                                unsigned nsplit,
                                const char *type) {
+  using namespace std;
   using namespace xgboost;
   const char *msg = "xgboost is compiled in local mode\n"\
       "to use hdfs, s3 or distributed version, compile with make dmlc=1";
@@ -203,13 +192,38 @@ InputSplit* InputSplit::Create(const char *uri,
   return new utils::SingleFileSplit(uri);
 }
 
-Stream *Stream::Create(const char *uri, const char * const flag) {
+Stream *Stream::Create(const char *fname, const char * const mode, bool allow_null) {
+  using namespace std;
   using namespace xgboost;
   const char *msg = "xgboost is compiled in local mode\n"\
       "to use hdfs, s3 or distributed version, compile with make dmlc=1";
-  utils::Check(strncmp(uri, "s3://", 5) != 0, msg);
-  utils::Check(strncmp(uri, "hdfs://", 7) != 0, msg);
-  return new utils::StdFile(uri, flag);
+  utils::Check(strncmp(fname, "s3://", 5) != 0, msg);
+  utils::Check(strncmp(fname, "hdfs://", 7) != 0, msg);
+
+  std::FILE *fp = NULL;
+  bool use_stdio = false;
+  using namespace std;
+#ifndef XGBOOST_STRICT_CXX98_
+  if (!strcmp(fname, "stdin")) {
+    use_stdio = true; fp = stdin;
+  }
+  if (!strcmp(fname, "stdout")) {
+    use_stdio = true; fp = stdout;
+  }
+#endif
+  if (!strncmp(fname, "file://", 7)) fname += 7;
+  if (!use_stdio) {
+    std::string flag = mode;
+    if (flag == "w") flag = "wb";
+    if (flag == "r") flag = "rb";
+    fp = fopen64(fname, flag.c_str());
+  }
+  if (fp != NULL) {
+    return new utils::StdFile(fp, use_stdio);
+  } else {
+    utils::Check(allow_null, "fail to open file %s", fname);
+    return NULL;
+  }
 }
 }  // namespace dmlc
 
